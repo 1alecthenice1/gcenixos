@@ -1,53 +1,74 @@
 {
   description = "NixOS for GCP ARM64 (T2A)";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";  # Match your Pi flake
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    disko.url = "github:nix-community/disko";
+    disko.inputs.nixpkgs.follows = "nixpkgs";
+  };
 
-  outputs = { self, nixpkgs }: {
+  outputs = { self, nixpkgs, disko }: {
     nixosConfigurations.vm = nixpkgs.lib.nixosSystem {
       system = "aarch64-linux";
 
       modules = [
-        ({ config, pkgs, ... }: {
+        disko.nixosModules.disko
+        ({ config, pkgs, lib, ... }: {
           imports = [ "${nixpkgs}/nixos/modules/virtualisation/google-compute-image.nix" ];
 
-          boot.loader.grub.enable = false;
-          boot.loader.generic-extlinux-compatible.enable = true;
+          # Override the Google Cloud filesystem config to use disko devices
+          fileSystems."/".device = lib.mkForce "/dev/disk/by-partlabel/disk-main-root";
 
-          services.qemuGuest.enable = true;
+          # Proper UEFI boot configuration
+          boot.loader.systemd-boot.enable = true;
+          boot.loader.efi.canTouchEfiVariables = true;
+
+          # Add disko configuration with EFI boot partition
+          disko.devices = {
+            disk = {
+              main = {
+                type = "disk";
+                device = "/dev/nvme0n1";
+                content = {
+                  type = "gpt";
+                  partitions = {
+                    boot = {
+                      size = "1G";
+                      type = "EF00";
+                      content = {
+                        type = "filesystem";
+                        format = "vfat";
+                        mountpoint = "/boot";
+                      };
+                    };
+                    root = {
+                      size = "100%";
+                      content = {
+                        type = "filesystem";
+                        format = "ext4";
+                        mountpoint = "/";
+                        extraArgs = [ "-L" "nixos" ];
+                      };
+                    };
+                  };
+                };
+              };
+            };
+          };
+
           services.openssh.enable = true;
-
+          
           users.users.builder = {
             isNormalUser = true;
             extraGroups = [ "wheel" ];
             openssh.authorizedKeys.keys = [
-              "ssh-ed25519 YOUR_REAL_KEY_HERE"  # Replace with your actual key
+              "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5D+e6WddHeNM1eYZRSeQg57JvFZg6KhofgPP3aKvpc aleckillian44@proton.me"
             ];
           };
 
-          # Optimized Nix settings for builds
-          nix.settings = {
-            experimental-features = [ "nix-command" "flakes" ];
-            max-jobs = "auto";
-            cores = 0;
-          };
-
-          # Essential build tools
-          environment.systemPackages = with pkgs; [
-            git
-            vim
-            htop
-            curl
-          ];
-
-          # Swap via zram (good for builds)
-          services.zramSwap.enable = true;
-          services.zramSwap.memoryPercent = 75;
-
-          time.timeZone = "UTC";
-          i18n.defaultLocale = "en_US.UTF-8";
-          console.keyMap = "us";
-
+          security.sudo.wheelNeedsPassword = false;
+          nix.settings.experimental-features = [ "nix-command" "flakes" ];
+          
           system.stateVersion = "24.11";
         })
       ];
